@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"log"
 
 	"github.com/libp2p/go-libp2p"
@@ -40,23 +41,21 @@ func makeRandomNode(port int, done chan bool) *Node {
 func run(host *Node, done <-chan bool) {
 	// connect peers
 	addressList := []string{}
-	var multiaddrs []ma.Multiaddr
+	var addrInfo []peer.AddrInfo
 	// Turn the destination into a multiaddr.
 	for _, addr := range addressList {
-		maddr, err := ma.NewMultiaddr(addr)
+		ainfo, err := peer.AddrInfoFromString(addr)
 		if err != nil {
 			log.Println(err)
 			return
 		}
-		multiaddrs = append(multiaddrs, maddr)
+		addrInfo = append(addrInfo, *ainfo)
 	}
 
-	host.Peerstore().AddAddrs(host.ID(), multiaddrs, peerstore.PermanentAddrTTL)
-	//h2.Peerstore().AddAddrs(h1.ID(), h1.Addrs(), peerstore.PermanentAddrTTL)
-
-	// send messages using the protocols
-	//h1.Ping(h2.Host)
-	//h1.Echo(h2.Host)
+	for _, addr := range addrInfo {
+		host.Peerstore().AddAddrs(addr.ID, addr.Addrs, peerstore.PermanentAddrTTL)
+		host.Ping(addr.ID)
+	}
 
 	// block until all responses have been processed
 	for i := 0; i < 8; i++ {

@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"io/ioutil"
 	"log"
 
-	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 
 	proto "github.com/gogo/protobuf/proto"
@@ -124,8 +124,8 @@ func (p *PingProtocol) onPingResponse(s network.Stream) {
 	p.done <- true
 }
 
-func (p *PingProtocol) Ping(host host.Host) bool {
-	log.Printf("%s: Sending ping to: %s....", p.node.ID(), host.ID())
+func (p *PingProtocol) Ping(id peer.ID) bool {
+	log.Printf("%s: Sending ping to: %s....", p.node.ID(), id)
 
 	// create message data
 	req := &p2p.PingRequest{MessageData: p.node.NewMessageData(uuid.New().String(), false),
@@ -141,13 +141,13 @@ func (p *PingProtocol) Ping(host host.Host) bool {
 	// add the signature to the message
 	req.MessageData.Sign = signature
 
-	ok := p.node.sendProtoMessage(host.ID(), pingRequest, req)
+	ok := p.node.sendProtoMessage(id, pingRequest, req)
 	if !ok {
 		return false
 	}
 
 	// store ref request so response handler has access to it
 	p.requests[req.MessageData.Id] = req
-	log.Printf("%s: Ping to: %s was sent. Message Id: %s, Message: %s", p.node.ID(), host.ID(), req.MessageData.Id, req.Message)
+	log.Printf("%s: Ping to: %s was sent. Message Id: %s, Message: %s", p.node.ID(), id, req.MessageData.Id, req.Message)
 	return true
 }

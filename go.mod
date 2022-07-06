@@ -1,4 +1,4 @@
-module node
+module github.com/heropan/node
 
 go 1.17
 
