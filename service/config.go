@@ -19,13 +19,12 @@ import (
 )
 
 const (
-	DefaultConfigFilename  = "node.conf"
-	defaultDataDirname     = "data"
-	defaultChainSubDirname = "chain"
-	defaultLogLevel        = "info"
-	defaultLogDirname      = "logs"
-	defaultLogFilename     = "lnd.log"
-	defaultPeerPort        = 9000
+	DefaultConfigFilename = "node.conf"
+	defaultDataDirname    = "data"
+	defaultLogLevel       = "info"
+	defaultLogDirname     = "logs"
+	defaultLogFilename    = "lnd.log"
+	defaultPeerPort       = 9000
 
 	defaultMaxLogFiles    = 3
 	defaultMaxLogFileSize = 10
@@ -66,6 +65,11 @@ type Config struct {
 	Peers    []peer.AddrInfo
 
 	DebugLevel string `short:"d" long:"debuglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <global-level>,<subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
+
+	MainNet  bool `long:"mainnet" description:"Use the main network"`
+	TestNet3 bool `long:"testnet" description:"Use the test network"`
+	SimNet   bool `long:"simnet" description:"Use the simulation test network"`
+	RegTest  bool `long:"regtest" description:"Use the regression test network"`
 
 	// LogWriter is the root logger that all of the daemon's subloggers are
 	// hooked up to.
@@ -118,6 +122,8 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flag
 		cfg.DataDir = filepath.Join(nodeDir, defaultDataDirname)
 	}
 
+	srvrLog.Infof("node dir: %v", nodeDir)
+
 	funcName := "ValidateConfig"
 	mkErr := func(format string, args ...interface{}) error {
 		return fmt.Errorf(funcName+": "+format, args...)
@@ -147,12 +153,36 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flag
 	// to directories and files are cleaned and expanded before attempting
 	// to use them later on.
 	cfg.DataDir = CleanAndExpandPath(cfg.DataDir)
-
+	// Multiple networks can't be selected simultaneously.  Count
+	// number of network flags passed; assign active network params
+	// while we're at it.
+	numNets := 0
+	if cfg.MainNet {
+		numNets++
+		cfg.ActiveNetParams = chainreg.BitcoinMainNetParams
+	}
+	if cfg.TestNet3 {
+		numNets++
+		cfg.ActiveNetParams = chainreg.BitcoinTestNetParams
+	}
+	if cfg.RegTest {
+		numNets++
+		cfg.ActiveNetParams = chainreg.BitcoinRegTestNetParams
+	}
+	if cfg.SimNet {
+		numNets++
+		cfg.ActiveNetParams = chainreg.BitcoinSimNetParams
+	}
+	if numNets > 1 {
+		str := "The mainnet, testnet, regtest, and simnet " +
+			"params can't be used together -- choose one " +
+			"of the four"
+		return nil, mkErr(str)
+	}
 	// We'll now construct the network directory which will be where we
 	// store all the data specific to this chain/network.
 	cfg.networkDir = filepath.Join(
-		cfg.DataDir, defaultChainSubDirname,
-		NormalizeNetwork(cfg.ActiveNetParams.Name),
+		cfg.DataDir, NormalizeNetwork(cfg.ActiveNetParams.Name),
 	)
 
 	// Create the lnd directory and all other sub-directories if they don't
@@ -252,7 +282,7 @@ func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 	appName = strings.TrimSuffix(appName, filepath.Ext(appName))
 	usageMessage := fmt.Sprintf("Use %s -h to show usage", appName)
 	if preCfg.ShowVersion {
-		fmt.Println(appName, "version", "0.0.1", "commit="+"")
+		fmt.Println(appName, "version", build.Version(), "commit="+build.Commit)
 		os.Exit(0)
 	}
 

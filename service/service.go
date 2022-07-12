@@ -3,8 +3,6 @@ package service
 import (
 	"errors"
 	"github.com/heropan/node/signal"
-	"log"
-
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -13,6 +11,9 @@ import (
 
 func Main(interceptor signal.Interceptor) {
 	cfg, err := LoadConfig(interceptor)
+	if err != nil {
+		panic(err)
+	}
 
 	done := make(chan bool, 1)
 
@@ -30,7 +31,7 @@ func Main(interceptor signal.Interceptor) {
 	if err != nil {
 		panic(err)
 	}
-	log.Printf("libp2p node address: %s", addrs[0])
+	srvrLog.Infof("libp2p node address: %s", addrs[0])
 
 	run(*cfg, host)
 

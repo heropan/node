@@ -3,8 +3,14 @@ module github.com/heropan/node
 go 1.17
 
 require (
+	github.com/btcsuite/btcd v0.22.1
+	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
+	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
+	github.com/coreos/go-systemd v0.0.0-20181012123002-c6f51f82210d
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/uuid v1.1.1
+	github.com/jessevdk/go-flags v1.4.0
+	github.com/jrick/logrotate v1.0.0
 	github.com/libp2p/go-libp2p v0.20.3
 	github.com/libp2p/go-libp2p-core v0.16.1
 	github.com/multiformats/go-multiaddr v0.5.0
@@ -13,7 +19,6 @@ require (
 require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/btcsuite/btcd v0.22.1 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.1.3 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect
