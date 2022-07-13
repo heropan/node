@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"github.com/heropan/node/signal"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
@@ -12,14 +13,16 @@ import (
 func Main(interceptor signal.Interceptor) {
 	cfg, err := LoadConfig(interceptor)
 	if err != nil {
-		panic(err)
+		fmt.Printf("load config err: %v\n", err)
+		return
 	}
 
 	done := make(chan bool, 1)
 
 	host, err := makeRandomNode(*cfg, done)
 	if err != nil {
-		panic(err)
+		fmt.Printf("make node err: %v\n", err)
+		return
 	}
 
 	// print the node's PeerInfo in multiaddr format
@@ -29,8 +32,10 @@ func Main(interceptor signal.Interceptor) {
 	}
 	addrs, err := peer.AddrInfoToP2pAddrs(&peerInfo)
 	if err != nil {
-		panic(err)
+		fmt.Printf("format addr info err: %v\n", err)
+		return
 	}
+	srvrLog.Infof("network: %v", NormalizeNetwork(cfg.ActiveNetParams.Name))
 	srvrLog.Infof("libp2p node address: %s", addrs[0])
 
 	run(*cfg, host)
@@ -86,11 +91,6 @@ func makeRandomNode(cfg Config, done chan bool) (*Node, error) {
 }
 
 func run(cfg Config, host *Node) {
-	// connect peers
-	//addressList := []string{
-	//	"/ip4/127.0.0.1/tcp/10000/p2p/16Uiu2HAmPfWPo3HesfTFoqTc3cQz3JsCf9RTKRN7woJNWEBuwANm",
-	//}
-
 	for _, p := range cfg.Peers {
 		host.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.PermanentAddrTTL)
 	}
