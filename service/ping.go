@@ -2,11 +2,11 @@ package service
 
 import (
 	"fmt"
-	"github.com/libp2p/go-libp2p-core/peer"
 	"io/ioutil"
 	"log"
 
 	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/libp2p/go-libp2p-core/peer"
 
 	proto "github.com/gogo/protobuf/proto"
 	uuid "github.com/google/uuid"

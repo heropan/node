@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"github.com/libp2p/go-libp2p-core/peer"
 	"log"
 	"os"
 	"os/user"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/btcsuite/btcutil"
 	"github.com/jessevdk/go-flags"
+	"github.com/libp2p/go-libp2p-core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -37,7 +37,7 @@ var (
 	//   C:\Users\<username>\AppData\Local\node on Windows
 	//   ~/.node on Linux
 	//   ~/Library/Application Support/node on MacOS
-	DefaultNodeDir = btcutil.AppDataDir("node", false)
+	DefaultNodeDir = btcutil.AppDataDir("Node", false)
 
 	// DefaultConfigFile is the default full path of lnd's configuration
 	// file.

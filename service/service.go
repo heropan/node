@@ -3,7 +3,12 @@ package service
 import (
 	"errors"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/heropan/node/signal"
+
+	"github.com/jessevdk/go-flags"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -13,8 +18,15 @@ import (
 func Main(interceptor signal.Interceptor) {
 	cfg, err := LoadConfig(interceptor)
 	if err != nil {
-		fmt.Printf("load config err: %v\n", err)
-		return
+		if e, ok := err.(*flags.Error); !ok || e.Type != flags.ErrHelp {
+			// Print error if not due to help request.
+			err = fmt.Errorf("failed to load config: %w", err)
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		// Help was requested, exit normally.
+		os.Exit(0)
 	}
 
 	done := make(chan bool, 1)
@@ -95,7 +107,14 @@ func run(cfg Config, host *Node) {
 		host.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.PermanentAddrTTL)
 	}
 
-	for _, p := range cfg.Peers {
-		host.Ping(p.ID)
+	go pingruntine(cfg, host)
+}
+
+func pingruntine(cfg Config, host *Node) {
+	for {
+		for _, p := range cfg.Peers {
+			host.Ping(p.ID)
+		}
+		time.Sleep(5000 * time.Millisecond)
 	}
 }
