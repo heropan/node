@@ -1,17 +1,23 @@
 package service
 
 import (
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/heropan/node/build"
 	"github.com/heropan/node/chainreg"
+	"github.com/heropan/node/nodecfg"
 	"github.com/heropan/node/signal"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcutil"
 	"github.com/jessevdk/go-flags"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -19,19 +25,22 @@ import (
 )
 
 const (
-	DefaultConfigFilename = "node.conf"
-	defaultDataDirname    = "data"
-	defaultLogLevel       = "info"
-	defaultLogDirname     = "logs"
-	defaultLogFilename    = "lnd.log"
-	defaultPeerPort       = 9000
+	DefaultConfigFilename  = "node.conf"
+	defaultDataDirname     = "data"
+	defaultChainSubDirname = "chain"
+	defaultLogLevel        = "info"
+	defaultLogDirname      = "logs"
+	defaultLogFilename     = "node.log"
+	defaultRPCPort         = 10009
+	defaultPeerPort        = 9000
+	defaultRPCHost         = "localhost"
 
 	defaultMaxLogFiles    = 3
 	defaultMaxLogFileSize = 10
 )
 
 var (
-	// DefaultLndDir is the default directory where lnd tries to find its
+	// DefaultNodeDir is the default directory where node tries to find its
 	// configuration file and store its data. This is a directory in the
 	// user's application data, for example:
 	//   C:\Users\<username>\AppData\Local\node on Windows
@@ -39,11 +48,23 @@ var (
 	//   ~/Library/Application Support/node on MacOS
 	DefaultNodeDir = btcutil.AppDataDir("Node", false)
 
-	// DefaultConfigFile is the default full path of lnd's configuration
+	// DefaultConfigFile is the default full path of node's configuration
 	// file.
 	DefaultConfigFile = filepath.Join(DefaultNodeDir, DefaultConfigFilename)
 	defaultDataDir    = filepath.Join(DefaultNodeDir, defaultDataDirname)
 	defaultLogDir     = filepath.Join(DefaultNodeDir, defaultLogDirname)
+
+	defaultBtcdDir         = btcutil.AppDataDir("btcd", false)
+	defaultBtcdRPCCertFile = filepath.Join(defaultBtcdDir, "rpc.cert")
+
+	defaultBitcoindDir = btcutil.AppDataDir("bitcoin", false)
+
+	// bitcoindEsimateModes defines all the legal values for bitcoind's
+	// estimatesmartfee RPC call.
+	defaultBitcoindEstimateMode = "CONSERVATIVE"
+	bitcoindEstimateModes       = [2]string{"ECONOMICAL", defaultBitcoindEstimateMode}
+
+	defaultPrunedNodeMaxPeers = 4
 )
 
 type Config struct {
@@ -57,6 +78,7 @@ type Config struct {
 	MaxLogFiles    int    `long:"maxlogfiles" description:"Maximum logfiles to keep (0 for no rotation)"`
 	MaxLogFileSize int    `long:"maxlogfilesize" description:"Maximum logfile size in MB"`
 
+	walletName   string   `short:"w" long:"walletname" description:"Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>"`
 	IdentityKey  string   `long:"idkey" description:"Configures libp2p to use the given private key to identify itself."`
 	RawListeners []string `long:"listen" description:"Add an \"/network/ip/tcp/port\" to listen for peer connections (default: \"/ip4/127.0.0.1/tcp/9000\")"`
 	Listeners    []ma.Multiaddr
@@ -66,10 +88,9 @@ type Config struct {
 
 	DebugLevel string `short:"d" long:"debuglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <global-level>,<subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
 
-	MainNet  bool `long:"mainnet" description:"Use the main network"`
-	TestNet3 bool `long:"testnet" description:"Use the test network"`
-	SimNet   bool `long:"simnet" description:"Use the simulation test network"`
-	RegTest  bool `long:"regtest" description:"Use the regression test network"`
+	Bitcoin      *nodecfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
+	BtcdMode     *nodecfg.Btcd     `group:"btcd" namespace:"btcd"`
+	BitcoindMode *nodecfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
 
 	// LogWriter is the root logger that all of the daemon's subloggers are
 	// hooked up to.
@@ -86,13 +107,27 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		NodeDir:         DefaultNodeDir,
-		ConfigFile:      DefaultConfigFile,
-		DataDir:         defaultDataDir,
-		LogDir:          defaultLogDir,
-		MaxLogFiles:     defaultMaxLogFiles,
-		MaxLogFileSize:  defaultMaxLogFileSize,
-		DebugLevel:      defaultLogLevel,
+		NodeDir:        DefaultNodeDir,
+		ConfigFile:     DefaultConfigFile,
+		DataDir:        defaultDataDir,
+		LogDir:         defaultLogDir,
+		MaxLogFiles:    defaultMaxLogFiles,
+		MaxLogFileSize: defaultMaxLogFileSize,
+		DebugLevel:     defaultLogLevel,
+		Bitcoin: &nodecfg.Chain{
+			Node: "btcd",
+		},
+		BtcdMode: &nodecfg.Btcd{
+			Dir:     defaultBtcdDir,
+			RPCHost: defaultRPCHost,
+			RPCCert: defaultBtcdRPCCertFile,
+		},
+		BitcoindMode: &nodecfg.Bitcoind{
+			Dir:                defaultBitcoindDir,
+			RPCHost:            defaultRPCHost,
+			EstimateMode:       defaultBitcoindEstimateMode,
+			PrunedNodeMaxPeers: defaultPrunedNodeMaxPeers,
+		},
 		LogWriter:       build.NewRotatingLogWriter(),
 		ActiveNetParams: chainreg.BitcoinTestNetParams,
 	}
@@ -115,11 +150,12 @@ func (u *usageError) Error() string {
 // normalized. The cleaned up config is returned on success.
 func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flagParser *flags.Parser) (*Config, error) {
 
-	// If the provided lnd directory is not the default, we'll modify the
+	// If the provided node directory is not the default, we'll modify the
 	// path to all of the files and directories that will live within it.
 	nodeDir := CleanAndExpandPath(cfg.NodeDir)
 	if nodeDir != DefaultNodeDir {
 		cfg.DataDir = filepath.Join(nodeDir, defaultDataDirname)
+		cfg.LogDir = filepath.Join(nodeDir, defaultLogDirname)
 	}
 
 	srvrLog.Infof("node dir: %v", nodeDir)
@@ -153,25 +189,72 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flag
 	// to directories and files are cleaned and expanded before attempting
 	// to use them later on.
 	cfg.DataDir = CleanAndExpandPath(cfg.DataDir)
+	cfg.LogDir = CleanAndExpandPath(cfg.LogDir)
+	cfg.BtcdMode.Dir = CleanAndExpandPath(cfg.BtcdMode.Dir)
+	cfg.BitcoindMode.Dir = CleanAndExpandPath(cfg.BitcoindMode.Dir)
+
+	// Bitcoin must be active.
+	if !cfg.Bitcoin.Active {
+		return nil, mkErr("bitcoin.active must be set to 1 (true)")
+	}
 	// Multiple networks can't be selected simultaneously.  Count
 	// number of network flags passed; assign active network params
 	// while we're at it.
 	numNets := 0
-	if cfg.MainNet {
+	if cfg.Bitcoin.MainNet {
 		numNets++
 		cfg.ActiveNetParams = chainreg.BitcoinMainNetParams
 	}
-	if cfg.TestNet3 {
+	if cfg.Bitcoin.TestNet3 {
 		numNets++
 		cfg.ActiveNetParams = chainreg.BitcoinTestNetParams
 	}
-	if cfg.RegTest {
+	if cfg.Bitcoin.RegTest {
 		numNets++
 		cfg.ActiveNetParams = chainreg.BitcoinRegTestNetParams
 	}
-	if cfg.SimNet {
+	if cfg.Bitcoin.SimNet {
 		numNets++
 		cfg.ActiveNetParams = chainreg.BitcoinSimNetParams
+	}
+	if cfg.Bitcoin.SigNet {
+		numNets++
+		cfg.ActiveNetParams = chainreg.BitcoinSigNetParams
+
+		// Let the user overwrite the default signet parameters.
+		// The challenge defines the actual signet network to
+		// join and the seed nodes are needed for network
+		// discovery.
+		sigNetChallenge := chaincfg.DefaultSignetChallenge
+		sigNetSeeds := chaincfg.DefaultSignetDNSSeeds
+		if cfg.Bitcoin.SigNetChallenge != "" {
+			challenge, err := hex.DecodeString(
+				cfg.Bitcoin.SigNetChallenge,
+			)
+			if err != nil {
+				return nil, mkErr("Invalid "+
+					"signet challenge, hex decode "+
+					"failed: %v", err)
+			}
+			sigNetChallenge = challenge
+		}
+
+		if len(cfg.Bitcoin.SigNetSeedNode) > 0 {
+			sigNetSeeds = make([]chaincfg.DNSSeed, len(
+				cfg.Bitcoin.SigNetSeedNode,
+			))
+			for idx, seed := range cfg.Bitcoin.SigNetSeedNode {
+				sigNetSeeds[idx] = chaincfg.DNSSeed{
+					Host:         seed,
+					HasFiltering: false,
+				}
+			}
+		}
+
+		chainParams := chaincfg.CustomSignetParams(
+			sigNetChallenge, sigNetSeeds,
+		)
+		cfg.ActiveNetParams.Params = &chainParams
 	}
 	if numNets > 1 {
 		str := "The mainnet, testnet, regtest, and simnet " +
@@ -179,15 +262,66 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flag
 			"of the four"
 		return nil, mkErr(str)
 	}
+
+	// The target network must be provided, otherwise, we won't
+	// know how to initialize the daemon.
+	if numNets == 0 {
+		str := "either --bitcoin.mainnet, or bitcoin.testnet," +
+			"bitcoin.simnet, or bitcoin.regtest " +
+			"must be specified"
+		return nil, mkErr(str)
+	}
+
+	switch cfg.Bitcoin.Node {
+	case "btcd":
+		err := parseRPCParams(
+			cfg.Bitcoin, cfg.BtcdMode,
+			chainreg.BitcoinChain, cfg.ActiveNetParams,
+		)
+		if err != nil {
+			return nil, mkErr("unable to load RPC "+
+				"credentials for btcd: %v", err)
+		}
+	case "bitcoind":
+		if cfg.Bitcoin.SimNet {
+			return nil, mkErr("bitcoind does not " +
+				"support simnet")
+		}
+
+		err := parseRPCParams(
+			cfg.Bitcoin, cfg.BitcoindMode,
+			chainreg.BitcoinChain, cfg.ActiveNetParams,
+		)
+		if err != nil {
+			return nil, mkErr("unable to load RPC "+
+				"credentials for bitcoind: %v", err)
+		}
+
+	case "nochainbackend":
+		// Nothing to configure, we're running without any chain
+		// backend whatsoever (pure signing mode).
+
+	default:
+		str := "only btcd, bitcoind mode " +
+			"supported for bitcoin at this time"
+		return nil, mkErr(str)
+	}
+
+	cfg.Bitcoin.ChainDir = filepath.Join(
+		cfg.DataDir, defaultChainSubDirname,
+		chainreg.BitcoinChain.String(),
+	)
+
 	// We'll now construct the network directory which will be where we
 	// store all the data specific to this chain/network.
 	cfg.networkDir = filepath.Join(
-		cfg.DataDir, NormalizeNetwork(cfg.ActiveNetParams.Name),
+		cfg.DataDir, defaultChainSubDirname,
+		chainreg.BitcoinChain.String(), NormalizeNetwork(cfg.ActiveNetParams.Name),
 	)
 
-	// Create the lnd directory and all other sub-directories if they don't
+	// Create the node directory and all other sub-directories if they don't
 	// already exist. This makes sure that directory trees are also created
-	// for files that point to outside the lnddir.
+	// for files that point to outside the nodedir.
 	dirs := []string{
 		nodeDir, cfg.DataDir, cfg.networkDir,
 	}
@@ -200,7 +334,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser, flag
 	// Append the network type to the log directory so it is "namespaced"
 	// per network in the same fashion as the data directory.
 	cfg.LogDir = filepath.Join(
-		cfg.LogDir, NormalizeNetwork(cfg.ActiveNetParams.Name),
+		cfg.LogDir, chainreg.BitcoinChain.String(), NormalizeNetwork(cfg.ActiveNetParams.Name),
 	)
 
 	// A log writer must be passed in, otherwise we can't function and would
@@ -288,7 +422,7 @@ func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 
 	// If the config file path has not been modified by the user, then we'll
 	// use the default config file path. However, if the user has modified
-	// their lnddir, then we should assume they intend to use the config
+	// their nodedir, then we should assume they intend to use the config
 	// file within it.
 	configFileDir := CleanAndExpandPath(preCfg.NodeDir)
 	configFilePath := CleanAndExpandPath(preCfg.ConfigFile)
@@ -392,4 +526,300 @@ func NormalizeNetwork(network string) string {
 	}
 
 	return network
+}
+
+func parseRPCParams(cConfig *nodecfg.Chain, nodeConfig interface{},
+	net chainreg.ChainCode, netParams chainreg.BitcoinNetParams) error {
+
+	// First, we'll check our node config to make sure the RPC parameters
+	// were set correctly. We'll also determine the path to the conf file
+	// depending on the backend node.
+	var daemonName, confDir, confFile string
+	switch conf := nodeConfig.(type) {
+	case *nodecfg.Btcd:
+		// If both RPCUser and RPCPass are set, we assume those
+		// credentials are good to use.
+		if conf.RPCUser != "" && conf.RPCPass != "" {
+			return nil
+		}
+
+		// Get the daemon name for displaying proper errors.
+		switch net {
+		case chainreg.BitcoinChain:
+			daemonName = "btcd"
+			confDir = conf.Dir
+			confFile = "btcd"
+		}
+
+		// If only ONE of RPCUser or RPCPass is set, we assume the
+		// user did that unintentionally.
+		if conf.RPCUser != "" || conf.RPCPass != "" {
+			return fmt.Errorf("please set both or neither of "+
+				"%[1]v.rpcuser, %[1]v.rpcpass", daemonName)
+		}
+
+	case *nodecfg.Bitcoind:
+		// Ensure that if the ZMQ options are set, that they are not
+		// equal.
+		if conf.ZMQPubRawBlock != "" && conf.ZMQPubRawTx != "" {
+			err := checkZMQOptions(
+				conf.ZMQPubRawBlock, conf.ZMQPubRawTx,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Ensure that if the estimate mode is set, that it is a legal
+		// value.
+		if conf.EstimateMode != "" {
+			err := checkEstimateMode(conf.EstimateMode)
+			if err != nil {
+				return err
+			}
+		}
+
+		// If all of RPCUser, RPCPass, ZMQBlockHost, and ZMQTxHost are
+		// set, we assume those parameters are good to use.
+		if conf.RPCUser != "" && conf.RPCPass != "" &&
+			conf.ZMQPubRawBlock != "" && conf.ZMQPubRawTx != "" {
+			return nil
+		}
+
+		// Get the daemon name for displaying proper errors.
+		switch net {
+		case chainreg.BitcoinChain:
+			daemonName = "bitcoind"
+			confDir = conf.Dir
+			confFile = "bitcoin"
+		}
+
+		// If not all of the parameters are set, we'll assume the user
+		// did this unintentionally.
+		if conf.RPCUser != "" || conf.RPCPass != "" ||
+			conf.ZMQPubRawBlock != "" || conf.ZMQPubRawTx != "" {
+
+			return fmt.Errorf("please set all or none of "+
+				"%[1]v.rpcuser, %[1]v.rpcpass, "+
+				"%[1]v.zmqpubrawblock, %[1]v.zmqpubrawtx",
+				daemonName)
+		}
+	}
+
+	// If we're in simnet mode, then the running btcd instance won't read
+	// the RPC credentials from the configuration. So if node wasn't
+	// specified the parameters, then we won't be able to start.
+	if cConfig.SimNet {
+		return fmt.Errorf("rpcuser and rpcpass must be set to your " +
+			"btcd node's RPC parameters for simnet mode")
+	}
+
+	fmt.Println("Attempting automatic RPC configuration to " + daemonName)
+
+	confFile = filepath.Join(confDir, fmt.Sprintf("%v.conf", confFile))
+	switch cConfig.Node {
+	case "btcd", "ltcd":
+		nConf := nodeConfig.(*nodecfg.Btcd)
+		rpcUser, rpcPass, err := extractBtcdRPCParams(confFile)
+		if err != nil {
+			return fmt.Errorf("unable to extract RPC credentials: "+
+				"%v, cannot start w/o RPC connection", err)
+		}
+		nConf.RPCUser, nConf.RPCPass = rpcUser, rpcPass
+
+	case "bitcoind", "litecoind":
+		nConf := nodeConfig.(*nodecfg.Bitcoind)
+		rpcUser, rpcPass, zmqBlockHost, zmqTxHost, err :=
+			extractBitcoindRPCParams(netParams.Params.Name, confFile)
+		if err != nil {
+			return fmt.Errorf("unable to extract RPC credentials: "+
+				"%v, cannot start w/o RPC connection", err)
+		}
+		nConf.RPCUser, nConf.RPCPass = rpcUser, rpcPass
+		nConf.ZMQPubRawBlock, nConf.ZMQPubRawTx = zmqBlockHost, zmqTxHost
+	}
+
+	fmt.Printf("Automatically obtained %v's RPC credentials\n", daemonName)
+	return nil
+}
+
+// extractBtcdRPCParams attempts to extract the RPC credentials for an existing
+// btcd instance. The passed path is expected to be the location of btcd's
+// application data directory on the target system.
+func extractBtcdRPCParams(btcdConfigPath string) (string, string, error) {
+	// First, we'll open up the btcd configuration file found at the target
+	// destination.
+	btcdConfigFile, err := os.Open(btcdConfigPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = btcdConfigFile.Close() }()
+
+	// With the file open extract the contents of the configuration file so
+	// we can attempt to locate the RPC credentials.
+	configContents, err := ioutil.ReadAll(btcdConfigFile)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Attempt to locate the RPC user using a regular expression. If we
+	// don't have a match for our regular expression then we'll exit with
+	// an error.
+	rpcUserRegexp, err := regexp.Compile(`(?m)^\s*rpcuser\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", err
+	}
+	userSubmatches := rpcUserRegexp.FindSubmatch(configContents)
+	if userSubmatches == nil {
+		return "", "", fmt.Errorf("unable to find rpcuser in config")
+	}
+
+	// Similarly, we'll use another regular expression to find the set
+	// rpcpass (if any). If we can't find the pass, then we'll exit with an
+	// error.
+	rpcPassRegexp, err := regexp.Compile(`(?m)^\s*rpcpass\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", err
+	}
+	passSubmatches := rpcPassRegexp.FindSubmatch(configContents)
+	if passSubmatches == nil {
+		return "", "", fmt.Errorf("unable to find rpcuser in config")
+	}
+
+	return string(userSubmatches[1]), string(passSubmatches[1]), nil
+}
+
+// extractBitcoindRPCParams attempts to extract the RPC credentials for an
+// existing bitcoind node instance. The passed path is expected to be the
+// location of bitcoind's bitcoin.conf on the target system. The routine looks
+// for a cookie first, optionally following the datadir configuration option in
+// the bitcoin.conf. If it doesn't find one, it looks for rpcuser/rpcpassword.
+func extractBitcoindRPCParams(networkName string,
+	bitcoindConfigPath string) (string, string, string, string, error) {
+
+	// First, we'll open up the bitcoind configuration file found at the
+	// target destination.
+	bitcoindConfigFile, err := os.Open(bitcoindConfigPath)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	defer func() { _ = bitcoindConfigFile.Close() }()
+
+	// With the file open extract the contents of the configuration file so
+	// we can attempt to locate the RPC credentials.
+	configContents, err := ioutil.ReadAll(bitcoindConfigFile)
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	// First, we'll look for the ZMQ hosts providing raw block and raw
+	// transaction notifications.
+	zmqBlockHostRE, err := regexp.Compile(
+		`(?m)^\s*zmqpubrawblock\s*=\s*([^\s]+)`,
+	)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	zmqBlockHostSubmatches := zmqBlockHostRE.FindSubmatch(configContents)
+	if len(zmqBlockHostSubmatches) < 2 {
+		return "", "", "", "", fmt.Errorf("unable to find " +
+			"zmqpubrawblock in config")
+	}
+	zmqTxHostRE, err := regexp.Compile(`(?m)^\s*zmqpubrawtx\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	zmqTxHostSubmatches := zmqTxHostRE.FindSubmatch(configContents)
+	if len(zmqTxHostSubmatches) < 2 {
+		return "", "", "", "", errors.New("unable to find zmqpubrawtx " +
+			"in config")
+	}
+	zmqBlockHost := string(zmqBlockHostSubmatches[1])
+	zmqTxHost := string(zmqTxHostSubmatches[1])
+	if err := checkZMQOptions(zmqBlockHost, zmqTxHost); err != nil {
+		return "", "", "", "", err
+	}
+
+	// Next, we'll try to find an auth cookie. We need to detect the chain
+	// by seeing if one is specified in the configuration file.
+	dataDir := filepath.Dir(bitcoindConfigPath)
+	dataDirRE, err := regexp.Compile(`(?m)^\s*datadir\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	dataDirSubmatches := dataDirRE.FindSubmatch(configContents)
+	if dataDirSubmatches != nil {
+		dataDir = string(dataDirSubmatches[1])
+	}
+
+	chainDir := ""
+	switch networkName {
+	case "mainnet":
+		chainDir = ""
+	case "regtest", "testnet3", "signet":
+		chainDir = networkName
+	default:
+		return "", "", "", "", fmt.Errorf("unexpected networkname %v", networkName)
+	}
+
+	cookie, err := ioutil.ReadFile(filepath.Join(dataDir, chainDir, ".cookie"))
+	if err == nil {
+		splitCookie := strings.Split(string(cookie), ":")
+		if len(splitCookie) == 2 {
+			return splitCookie[0], splitCookie[1], zmqBlockHost,
+				zmqTxHost, nil
+		}
+	}
+
+	// We didn't find a cookie, so we attempt to locate the RPC user using
+	// a regular expression. If we  don't have a match for our regular
+	// expression then we'll exit with an error.
+	rpcUserRegexp, err := regexp.Compile(`(?m)^\s*rpcuser\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	userSubmatches := rpcUserRegexp.FindSubmatch(configContents)
+	if userSubmatches == nil {
+		return "", "", "", "", fmt.Errorf("unable to find rpcuser in " +
+			"config")
+	}
+
+	// Similarly, we'll use another regular expression to find the set
+	// rpcpass (if any). If we can't find the pass, then we'll exit with an
+	// error.
+	rpcPassRegexp, err := regexp.Compile(`(?m)^\s*rpcpassword\s*=\s*([^\s]+)`)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	passSubmatches := rpcPassRegexp.FindSubmatch(configContents)
+	if passSubmatches == nil {
+		return "", "", "", "", fmt.Errorf("unable to find rpcpassword " +
+			"in config")
+	}
+
+	return string(userSubmatches[1]), string(passSubmatches[1]),
+		zmqBlockHost, zmqTxHost, nil
+}
+
+// checkZMQOptions ensures that the provided addresses to use as the hosts for
+// ZMQ rawblock and rawtx notifications are different.
+func checkZMQOptions(zmqBlockHost, zmqTxHost string) error {
+	if zmqBlockHost == zmqTxHost {
+		return errors.New("zmqpubrawblock and zmqpubrawtx must be set " +
+			"to different addresses")
+	}
+
+	return nil
+}
+
+// checkEstimateMode ensures that the provided estimate mode is legal.
+func checkEstimateMode(estimateMode string) error {
+	for _, mode := range bitcoindEstimateModes {
+		if estimateMode == mode {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("estimatemode must be one of the following: %v",
+		bitcoindEstimateModes[:])
 }
