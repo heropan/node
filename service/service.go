@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/davecgh/go-spew/spew"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcutil"
 	"log"
 	"net"
 	"os"
@@ -94,7 +96,7 @@ func Main(interceptor signal.Interceptor) {
 		fmt.Printf("format addr info err: %v\n", err)
 		return
 	}
-	srvrLog.Infof("walletname: %v", srv.Cfg.walletName)
+	srvrLog.Infof("walletname: %v", srv.Cfg.WalletName)
 	srvrLog.Infof("network: %v", NormalizeNetwork(cfg.ActiveNetParams.Name))
 	srvrLog.Infof("libp2p node address: %s", addrs[0])
 
@@ -138,8 +140,8 @@ func Main(interceptor signal.Interceptor) {
 			}
 		}
 
-		if srv.Cfg.walletName != "" {
-			bitcoindHost = bitcoindHost + "/wallet/" + srv.Cfg.walletName
+		if srv.Cfg.WalletName != "" {
+			bitcoindHost = bitcoindHost + "/wallet/" + srv.Cfg.WalletName
 		}
 
 		connCfg := &rpcclient.ConnConfig{
@@ -220,67 +222,167 @@ func run(srv *Service) {
 		srv.Node.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.PermanentAddrTTL)
 	}
 
-	rpctest(srv.Client)
+	rpctest(srv.Cfg, srv.Client)
 	go pingruntine(srv)
 }
 
-func rpctest(client *rpcclient.Client) {
+// legacyGetBlockRequest constructs and sends a legacy getblock request which
+// contains two separate bools to denote verbosity, in contract to a single int
+// parameter.
+func listWallets(c *rpcclient.Client) ([]string, error) {
+	rawMessage, err := c.RawRequest("listwallets", nil)
+	if err != nil {
+		return []string{}, err
+	}
 
-	r1, err := client.GetAddressInfo("2MsijEHJpaHmrVkh2TuRNn5kuiVEpMRfHpM")
+	var result []string
+	err = json.Unmarshal(rawMessage, &result)
+	if err != nil {
+		return []string{}, err
+	}
+
+	return result, nil
+}
+
+func rpctest(cfg *Config, client *rpcclient.Client) {
+
+	// Get the list of unspent transaction outputs (utxos) that the
+	// connected wallet has at least one private key for.
+	//unspent, err := client.ListUnspent()
+	//if err != nil {
+	//	log.Fatal("listunspent err: ", err)
+	//}
+	//log.Printf("Num unspent outputs (utxos): %d", len(unspent))
+	//if len(unspent) > 0 {
+	//	log.Printf("First utxo:\n%v", spew.Sdump(unspent[0]))
+	//}
+	//
+	//for _, us := range unspent {
+	//	if us.Address == "2MtAwxuEEdsbJGnJvKmowoEfEf9QYHFsPZA" {
+	//		log.Printf("====== unspent of ('%s')", us.Address)
+	//		showOutput(us)
+	//	}
+	//}
+
+	wpkh1, _ := btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(hexToBytes("0227f08c965311c8bc47c8a72c8df208038bd049d39e6eadc48dc23d136728f308")), cfg.ActiveNetParams.Params)
+	pks1, _ := txscript.PayToAddrScript(wpkh1)
+	addr1, _ := btcutil.NewAddressScriptHash(pks1, cfg.ActiveNetParams.Params)
+	log.Printf("addr1: %s", addr1.EncodeAddress())
+
+	wpkh2, _ := btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(hexToBytes("02ba135d6eb72ca28b366c5806dd4a17820742c92ceb75de503d7c7f91a9cbdc8d")), cfg.ActiveNetParams.Params)
+	pks2, _ := txscript.PayToAddrScript(wpkh2)
+	addr2, _ := btcutil.NewAddressScriptHash(pks2, cfg.ActiveNetParams.Params)
+	log.Printf("addr2: %s", addr2.EncodeAddress())
+
+	wpkh3, _ := btcutil.NewAddressWitnessPubKeyHash(btcutil.Hash160(hexToBytes("0301263387b72889bdf6f0287ebf114f9099509b0cd3a72cabae3ab4d50b42c275")), cfg.ActiveNetParams.Params)
+	pks3, _ := txscript.PayToAddrScript(wpkh3)
+	addr3, _ := btcutil.NewAddressScriptHash(pks3, cfg.ActiveNetParams.Params)
+	log.Printf("addr3: %s", addr3.EncodeAddress())
+
+	var addresses []btcutil.Address
+	addr, _ := btcutil.NewAddressPubKey(hexToBytes("0227f08c965311c8bc47c8a72c8df208038bd049d39e6eadc48dc23d136728f308"), cfg.ActiveNetParams.Params)
+	addresses = append(addresses, addr)
+	addr, _ = btcutil.NewAddressPubKey(hexToBytes("02ba135d6eb72ca28b366c5806dd4a17820742c92ceb75de503d7c7f91a9cbdc8d"), cfg.ActiveNetParams.Params)
+	addresses = append(addresses, addr)
+	addr, _ = btcutil.NewAddressPubKey(hexToBytes("0301263387b72889bdf6f0287ebf114f9099509b0cd3a72cabae3ab4d50b42c275"), cfg.ActiveNetParams.Params)
+	addresses = append(addresses, addr)
+
+	multisigResp, err := client.CreateMultisig(2, addresses)
+	if err != nil {
+		fmt.Printf("CreateMultisig err: %s", err.Error())
+		return
+	}
+	showOutput(multisigResp)
+	multiAddress, err := btcutil.DecodeAddress(multisigResp.Address, cfg.ActiveNetParams.Params)
+	if err != nil {
+		log.Fatalf("DecodeAddress err: %v", err)
+	}
+
+	addr1Info, err := client.GetAddressInfo(addr1.EncodeAddress())
 	if err != nil {
 		fmt.Printf("rpc getaddrinfo %s err: %s", "2MsijEHJpaHmrVkh2TuRNn5kuiVEpMRfHpM", err.Error())
 		return
 	}
-	showOutput(r1)
+	showOutput(addr1Info)
 
-	// Get the list of unspent transaction outputs (utxos) that the
-	// connected wallet has at least one private key for.
-	unspent, err := client.ListUnspent()
+	multiAddrInfo, err := client.GetAddressInfo(multiAddress.EncodeAddress())
 	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("Num unspent outputs (utxos): %d", len(unspent))
-	if len(unspent) > 0 {
-		log.Printf("First utxo:\n%v", spew.Sdump(unspent[0]))
-	}
-
-	rsp, err := client.DumpWallet("/Users/hero/wallet-a.dump.txt")
-	if err != nil {
-		srvrLog.Errorf("dump wallet err: %v", err)
+		fmt.Printf("rpc getaddrinfo %s err: %s", "2MsijEHJpaHmrVkh2TuRNn5kuiVEpMRfHpM", err.Error())
 		return
 	}
-	showOutput(rsp)
+	showOutput(multiAddrInfo)
 
-	//var addresses []btcutil.Address
-	//addr1, err := btcutil.NewAddressPubKey(hexToBytes("0301263387b72889bdf6f0287ebf114f9099509b0cd3a72cabae3ab4d50b42c275"),
-	//	cfg.ActiveNetParams.Params)
-	//if err != nil {
-	//	fmt.Printf("NewAddressPubKeyHash err : %s", err.Error())
-	//	return
-	//}
-	//addresses = append(addresses, addr1)
-	//addr2, err := btcutil.NewAddressPubKey(hexToBytes("02ba135d6eb72ca28b366c5806dd4a17820742c92ceb75de503d7c7f91a9cbdc8d"),
-	//	cfg.ActiveNetParams.Params)
-	//if err != nil {
-	//	fmt.Printf("NewAddressPubKeyHash err : %s", err.Error())
-	//	return
-	//}
-	//addresses = append(addresses, addr2)
-	//addr3, err := btcutil.NewAddressPubKey(hexToBytes("0227f08c965311c8bc47c8a72c8df208038bd049d39e6eadc48dc23d136728f308"),
-	//	cfg.ActiveNetParams.Params)
-	//if err != nil {
-	//	fmt.Printf("NewAddressPubKeyHash err : %s", err.Error())
-	//	return
-	//}
-	//addresses = append(addresses, addr3)
+	multiAddr, err := btcutil.DecodeAddress(multisigResp.Address, cfg.ActiveNetParams.Params)
+	if err != nil {
+		log.Fatal("DecodeAddress err: ", err)
+		return
+	}
 
-	//resp, err := client.CreateMultisig(2, addresses)
-	//if err != nil {
-	//	fmt.Printf("rpc version err: %s", err.Error())
-	//	return
-	//}
-	//showOutput(resp)
+	if err = client.ImportAddress(multisigResp.Address); err != nil {
+		log.Fatal("ImportAddress err ", err)
+	}
 
+	unspents, err := client.ListUnspentMinMaxAddresses(0, 10, []btcutil.Address{multiAddr})
+	if err != nil {
+		log.Fatal("ListUnspentMinMaxAddresses err: ", err)
+	}
+	log.Printf("utxo of (%s): ", multiAddr.String())
+	showOutput(unspents)
+
+	sendAmount, err := btcutil.NewAmount(0.1)
+	if err != nil {
+		log.Fatalf("NewAmount err: %v", err)
+	}
+
+	totalBalance, err := btcutil.NewAmount(0)
+	if err != nil {
+		log.Fatalf("NewAmount err: %v", err)
+	}
+
+	fee, err := btcutil.NewAmount(0.0001)
+	if err != nil {
+		log.Fatalf("NewAmount err: %v", err)
+	}
+
+	var inputs []btcjson.TransactionInput
+	for _, unspent := range unspents {
+		input := btcjson.TransactionInput{
+			Txid: unspent.TxID,
+			Vout: unspent.Vout,
+		}
+		inputs = append(inputs, input)
+		utxoAmount, err := btcutil.NewAmount(unspent.Amount)
+		if err != nil {
+			log.Fatalf("NewAmount err: %v", err)
+		}
+		totalBalance += utxoAmount
+	}
+	log.Printf("totalBalance: %v", totalBalance)
+
+	amounts := map[btcutil.Address]btcutil.Amount{
+		addr2:        sendAmount,
+		multiAddress: totalBalance - sendAmount - fee,
+	}
+
+	// transfer 0.1 BTC to and change back to self address
+	tx, err := client.CreateRawTransaction(inputs, amounts, nil)
+	if err != nil {
+		log.Fatalf("CreateRawTransaction err %v", err)
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, tx.SerializeSize()))
+	if err := tx.Serialize(buf); err != nil {
+		log.Fatalf("tx serialize err: %v", err)
+	}
+
+	txHex := hex.EncodeToString(buf.Bytes())
+	log.Printf("txHex: %s", txHex)
+
+	txDecoded, err := client.DecodeRawTransaction(buf.Bytes())
+	if err != nil {
+		log.Fatalf("decode tx err: %v", err)
+	}
+	showOutput(txDecoded)
 }
 
 func pingruntine(srv *Service) {

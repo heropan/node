@@ -78,7 +78,7 @@ type Config struct {
 	MaxLogFiles    int    `long:"maxlogfiles" description:"Maximum logfiles to keep (0 for no rotation)"`
 	MaxLogFileSize int    `long:"maxlogfilesize" description:"Maximum logfile size in MB"`
 
-	walletName   string   `short:"w" long:"walletname" description:"Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>"`
+	WalletName   string   `short:"w" long:"walletname" description:"Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>"`
 	IdentityKey  string   `long:"idkey" description:"Configures libp2p to use the given private key to identify itself."`
 	RawListeners []string `long:"listen" description:"Add an \"/network/ip/tcp/port\" to listen for peer connections (default: \"/ip4/127.0.0.1/tcp/9000\")"`
 	Listeners    []ma.Multiaddr
